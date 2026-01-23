@@ -11,243 +11,235 @@ import ai.djl.nn.Activation
 import ai.djl.nn.SequentialBlock
 import ai.djl.nn.transformer.BertBlock
 import ai.djl.nn.transformer.BertMaskedLanguageModelBlock
-import ai.djl.nn.transformer.BertMaskedLanguageModelLoss
 import ai.djl.training.DefaultTrainingConfig
-import ai.djl.training.Trainer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.ThreadLocalRandom
 import kotlin.math.min
-import kotlinx.coroutines.*
 
 /**
- * BertMaskedLanguageModelBlock と BertMaskedLanguageModelLoss を使用した、
- * GPUアクセラレーション対応の BERT MLM 学習システム
+ * BERT MLM training system using BertMaskedLanguageModelBlock and BertMaskedLanguageModelLoss,
+ * with GPU acceleration support.
  */
-fun main() = runBlocking {
-    val filePath = "train.txt"
-    val batchSize = 10
-    val maxSequenceLength = 128
-    val numEpochs = 10
+fun main() =
+    runBlocking {
+        val filePath = "train.txt"
+        val batchSize = 10
+        val maxSequenceLength = 128
+        val numEpochs = 10
 
-    // GPUが利用可能かチェックし、デバイスを決定
-    val device = if (Engine.getInstance().gpuCount > 0) Device.gpu() else Device.cpu()
-    println("使用デバイス: $device")
+        // Check if GPU is available and determine the device
+        val device = if (Engine.getInstance().gpuCount > 0) Device.gpu() else Device.cpu()
+        println("Using device: $device")
 
-    if (!Files.exists(Paths.get(filePath))) {
-        System.err.println("$filePath が見つかりません。")
-        return@runBlocking
-    }
+        if (!Files.exists(Paths.get(filePath))) {
+            System.err.println("$filePath not found.")
+            return@runBlocking
+        }
 
-    // 1. Tokenizer, Manager, Model の初期化
-    HuggingFaceTokenizer.newInstance("bert-base-uncased").use { tokenizer ->
-        NDManager.newBaseManager(device).use { manager ->
-            Model.newInstance("bert-mlm", device).use { model ->
+        // 1. Initialize Tokenizer, Manager, Model
+        HuggingFaceTokenizer.newInstance("bert-base-uncased").use { tokenizer ->
+            NDManager.newBaseManager(device).use { manager ->
+                Model.newInstance("bert-mlm", device).use { model ->
 
-                val vocabSize = 30522
-                val embeddingSize = 768
+                    val vocabSize = 30522
+                    val embeddingSize = 768
 
-                // 2. BertMaskedLanguageModelBlock の構築
-                val bertBlock = BertBlock.builder()
-                    .setTokenDictionarySize(vocabSize)
-                    .optTransformerBlockCount(4)
-                    .optAttentionHeadCount(8)
-                    .optEmbeddingSize(embeddingSize)
-                    .optMaxSequenceLength(maxSequenceLength)
-                    .build()
+                    // 2. Construct BertMaskedLanguageModelBlock
+                    val bertBlock =
+                        BertBlock
+                            .builder()
+                            .setTokenDictionarySize(vocabSize)
+                            .optTransformerBlockCount(4)
+                            .optAttentionHeadCount(8)
+                            .optEmbeddingSize(embeddingSize)
+                            .optMaxSequenceLength(maxSequenceLength)
+                            .build()
 
-                val mlmBlock = BertMaskedLanguageModelBlock(bertBlock, Activation::gelu)
+                    val mlmBlock = BertMaskedLanguageModelBlock(bertBlock, Activation::gelu)
 
-                // カスタムブロックの定義
-                val combinedBlock = object : SequentialBlock() {
-                    init {
-                        add(bertBlock)
-                        add(mlmBlock)
-                    }
-
-                    override fun forwardInternal(
-                        ps: ai.djl.training.ParameterStore,
-                        inputs: NDList,
-                        training: Boolean,
-                        params: ai.djl.util.PairList<String, Any>?
-                    ): NDList {
-                        // inputs: [tokenIds, typeIds, masks, maskedIndices]
-                        val tokenIds = inputs[0]
-                        val typeIds = inputs[1]
-                        val masks = inputs[2]
-                        val maskedIndices = inputs[3]
-                        
-                        // 1. BertBlock (Encoder) の実行
-                        val bertInput = NDList(tokenIds, typeIds, masks)
-                        val bertOutput = bertBlock.forward(ps, bertInput, training)
-                        val sequenceOutput = bertOutput[0] // [batch, seq_len, embedding_size]
-                        
-                        // 2. Embedding Table の取得
-                        val embeddingParam = bertBlock.tokenEmbedding.parameters[0].value
-                        val embeddingTable = ps.getValue(embeddingParam, tokenIds.device, training)
-                        
-                        // 3. BertMaskedLanguageModelBlock (MLM Head) の実行
-                        val mlmInput = NDList(sequenceOutput, maskedIndices, embeddingTable)
-                        val mlmOutput = mlmBlock.forward(ps, mlmInput, training)
-                        
-                        return mlmOutput // [log_probs]
-                    }
-
-                    override fun initializeChildBlocks(manager: NDManager, dataType: ai.djl.ndarray.types.DataType, vararg inputShapes: Shape) {
-                        // inputShapes: [tokenIds, typeIds, masks, maskedIndices]
-                        val tokenShape = inputShapes[0]
-                        val typeShape = inputShapes[1]
-                        val maskShape = inputShapes[2]
-                        val maskedIndicesShape = inputShapes[3]
-                        
-                        // BertBlock の初期化
-                        bertBlock.initialize(manager, dataType, tokenShape, typeShape, maskShape)
-                        
-                        // BertBlock の出力形状を取得
-                        val bertOutputShapes = bertBlock.getOutputShapes(arrayOf(tokenShape, typeShape, maskShape))
-                        val sequenceOutputShape = bertOutputShapes[0] // [batch, seq_len, embedding_size]
-                        
-                        // Embedding Table の形状 (vocab_size, embedding_size)
-                        val embeddingTableShape = Shape(vocabSize.toLong(), embeddingSize.toLong())
-                        
-                        // BertMaskedLanguageModelBlock の初期化
-                        // 期待される入力: [sequenceOutput, maskedIndices, embeddingTable]
-                        mlmBlock.initialize(manager, dataType, sequenceOutputShape, maskedIndicesShape, embeddingTableShape)
-                    }
-                    
-                    override fun getOutputShapes(inputShapes: Array<Shape>): Array<Shape> {
-                        // 最終的な出力形状を返す (log_probs)
-                        val batchSize = inputShapes[0].get(0)
-                        val maskedCount = inputShapes[3].get(1)
-                        return arrayOf(Shape(batchSize * maskedCount, vocabSize.toLong()))
-                    }
-                }
-
-                model.block = combinedBlock
-
-                // 3. 学習設定
-                // BertMaskedLanguageModelLoss(int labelIdx, int maskIdx, int logProbsIdx)
-                // labelIdx: ラベルのインデックス (0)
-                // maskIdx: マスクのインデックス (-1 は無効なインデックスなのでエラーになる)
-                // logProbsIdx: 予測確率のインデックス (0)
-                // BertMaskedLanguageModelLoss は maskIdx を使って labels からマスクを作成しようとします。
-                // labels.get(maskIdx) を呼び出すため、-1 だと IndexOutOfBoundsException になります。
-                // しかし、今回の実装では labels 自体が既にマスクされたトークンIDのみを含んでおり、
-                // マスク位置の情報 (maskedIndices) はモデル内で使用され、Loss計算時には不要です。
-                // BertMaskedLanguageModelLoss は、入力として (labels, predictions) を受け取りますが、
-                // 内部で labels.get(maskIdx) を呼ぶため、maskIdx は有効なインデックスでなければなりません。
-                // つまり、BertMaskedLanguageModelLoss は、labels リストの中にマスク情報も含まれていることを期待しています。
-                // しかし、現在の trainer.loss.evaluate(NDList(labelsND), outputs) では、
-                // labels リストには labelsND (正解トークン) しか含まれていません。
-                // したがって、maskIdx を指定することはできません。
-                
-                // 解決策:
-                // BertMaskedLanguageModelLoss は、マスク位置に基づいてロスを計算するためのものですが、
-                // 今回のモデル (BertMaskedLanguageModelBlock) は既にマスク位置の予測のみを出力しています (gatherFromIndices 済み)。
-                // したがって、出力は [batch * masked_count, vocab_size] となっており、
-                // ラベルも [batch * masked_count] になっています (prepareData0 で調整済み)。
-                // つまり、単純な SoftmaxCrossEntropyLoss で計算可能です。
-                // BertMaskedLanguageModelLoss を使う必要はなく、むしろ使うとインデックスの問題が発生します。
-                // ここでは、標準の Loss.softmaxCrossEntropyLoss を使用します。
-                // ただし、パディングされた部分 (-1) を無視する必要があります。
-                
-                val loss = ai.djl.training.loss.Loss.softmaxCrossEntropyLoss("loss", 1.0f, -1, true, true)
-                
-                val config = DefaultTrainingConfig(loss)
-                    .addTrainingListeners()
-
-                model.newTrainer(config).use { trainer ->
-                    // 初期化用の形状
-                    val batchShape = Shape(batchSize.toLong(), maxSequenceLength.toLong())
-                    val maskedIndicesShape = Shape(batchSize.toLong(), 20) 
-                    
-                    trainer.initialize(batchShape, batchShape, batchShape, maskedIndicesShape)
-
-                    // 4. 学習データの読み込み
-                    val allLines = Files.readAllLines(Paths.get(filePath))
-                    val validLines = allLines.filter { it.trim().isNotEmpty() }.toMutableList()
-
-                    val maskTokenId = tokenizer.encode("[MASK]").ids[0]
-                    val padTokenId = tokenizer.encode("[PAD]").ids[0]
-
-                    println("学習開始: ${validLines.size} 行のデータ, $numEpochs エポック")
-
-                    // 5. エポックループ
-                    for (epoch in 1..numEpochs) {
-                        println("--- エポック $epoch / $numEpochs ---")
-                        validLines.shuffle()
-
-                        var epochLoss = 0f
-                        var batchCount = 0
-
-                        // ミニバッチ処理
-                        for (i in validLines.indices step batchSize) {
-                            val currentBatchSize = min(batchSize, validLines.size - i)
-
-                            // 前処理（トークナイズ & マスク化）をコルーチンで並列実行
-                            val batchData = coroutineScope {
-                                (0 until currentBatchSize).map { b ->
-                                    async(Dispatchers.Default) {
-                                        val text = validLines[i + b]
-                                        prepareData0(text, tokenizer, maxSequenceLength, vocabSize, maskTokenId, padTokenId)
-                                    }
-                                }.awaitAll()
+                    // Define custom block
+                    val combinedBlock =
+                        object : SequentialBlock() {
+                            init {
+                                add(bertBlock)
+                                add(mlmBlock)
                             }
 
-                            // GPU/CPU でのモデル計算
-                            trainer.newGradientCollector().use { gc ->
-                                val inputIds = Array(currentBatchSize) { batchData[it].first } // tokenIds
-                                val maskedIndices = Array(currentBatchSize) { batchData[it].second } // maskedIndices
-                                val labels = Array(currentBatchSize) { batchData[it].third } // maskedTokens (labels)
+                            override fun forwardInternal(
+                                ps: ai.djl.training.ParameterStore,
+                                inputs: NDList,
+                                training: Boolean,
+                                params: ai.djl.util.PairList<String, Any>?,
+                            ): NDList {
+                                // inputs: [tokenIds, typeIds, masks, maskedIndices]
+                                val tokenIds = inputs[0]
+                                val typeIds = inputs[1]
+                                val masks = inputs[2]
+                                val maskedIndices = inputs[3]
 
-                                val inputIndicesND = manager.create(inputIds)
-                                val maskedIndicesND = manager.create(maskedIndices)
-                                val labelsND = manager.create(labels)
+                                // 1. Execute BertBlock (Encoder)
+                                val bertInput = NDList(tokenIds, typeIds, masks)
+                                val bertOutput = bertBlock.forward(ps, bertInput, training)
+                                val sequenceOutput = bertOutput[0] // [batch, seq_len, embedding_size]
 
-                                val typeIndicesND = manager.zeros(Shape(currentBatchSize.toLong(), maxSequenceLength.toLong()))
-                                val maskIndicesND = manager.ones(Shape(currentBatchSize.toLong(), maxSequenceLength.toLong()))
+                                // 2. Get Embedding Table
+                                val embeddingParam = bertBlock.tokenEmbedding.parameters[0].value
+                                val embeddingTable = ps.getValue(embeddingParam, tokenIds.device, training)
 
-                                // 順伝播: [tokenIds, typeIds, masks, maskedIndices]
-                                val outputs = trainer.forward(NDList(inputIndicesND, typeIndicesND, maskIndicesND, maskedIndicesND))
+                                // 3. Execute BertMaskedLanguageModelBlock (MLM Head)
+                                val mlmInput = NDList(sequenceOutput, maskedIndices, embeddingTable)
+                                val mlmOutput = mlmBlock.forward(ps, mlmInput, training)
 
-                                // 損失計算: [labels], [log_probs]
-                                // outputs は [batch * masked_count, vocab_size]
-                                // labelsND は [batch, masked_count] なので、フラット化が必要
-                                val flattenedLabels = labelsND.reshape(Shape(-1))
-                                
-                                // -1 のラベルを無視するためにフィルタリング
-                                val validMask = flattenedLabels.neq(-1)
-                                val validLabels = flattenedLabels.get(validMask)
-                                val validOutputs = outputs.singletonOrThrow().get(validMask)
-                                
-                                if (validLabels.size() > 0) {
-                                    val lossValue = trainer.loss.evaluate(NDList(validLabels), NDList(validOutputs))
-                                    gc.backward(lossValue)
-                                    trainer.step()
-                                    epochLoss += lossValue.getFloat()
-                                    batchCount++
-                                }
+                                return mlmOutput // [log_probs]
+                            }
+
+                            override fun initializeChildBlocks(
+                                manager: NDManager,
+                                dataType: ai.djl.ndarray.types.DataType,
+                                vararg inputShapes: Shape,
+                            ) {
+                                // inputShapes: [tokenIds, typeIds, masks, maskedIndices]
+                                val tokenShape = inputShapes[0]
+                                val typeShape = inputShapes[1]
+                                val maskShape = inputShapes[2]
+                                val maskedIndicesShape = inputShapes[3]
+
+                                // Initialize BertBlock
+                                bertBlock.initialize(manager, dataType, tokenShape, typeShape, maskShape)
+
+                                // Get output shapes of BertBlock
+                                val bertOutputShapes = bertBlock.getOutputShapes(arrayOf(tokenShape, typeShape, maskShape))
+                                val sequenceOutputShape = bertOutputShapes[0] // [batch, seq_len, embedding_size]
+
+                                // Shape of Embedding Table (vocab_size, embedding_size)
+                                val embeddingTableShape = Shape(vocabSize.toLong(), embeddingSize.toLong())
+
+                                // Initialize BertMaskedLanguageModelBlock
+                                // Expected input: [sequenceOutput, maskedIndices, embeddingTable]
+                                mlmBlock.initialize(manager, dataType, sequenceOutputShape, maskedIndicesShape, embeddingTableShape)
+                            }
+
+                            override fun getOutputShapes(inputShapes: Array<Shape>): Array<Shape> {
+                                // Return final output shape (log_probs)
+                                val batchSize = inputShapes[0].get(0)
+                                val maskedCount = inputShapes[3].get(1)
+                                return arrayOf(Shape(batchSize * maskedCount, vocabSize.toLong()))
                             }
                         }
-                        println("エポック $epoch 完了. 平均 Loss: ${if (batchCount > 0) epochLoss / batchCount else 0.0}")
-                    }
 
-                    // 6. モデルの保存
-                    val modelDir = Paths.get("build/model")
-                    if (!Files.exists(modelDir)) Files.createDirectories(modelDir)
-                    model.save(modelDir, "bert-mlm")
-                    println("モデルを保存しました: ${modelDir.toAbsolutePath()}")
+                    model.block = combinedBlock
+
+                    // 3. Training Configuration
+                    // Use standard Loss.softmaxCrossEntropyLoss instead of BertMaskedLanguageModelLoss
+                    // because our model already outputs predictions only for masked positions.
+                    val loss =
+                        ai.djl.training.loss.Loss
+                            .softmaxCrossEntropyLoss("loss", 1.0f, -1, true, true)
+
+                    val config =
+                        DefaultTrainingConfig(loss)
+                            .addTrainingListeners()
+
+                    model.newTrainer(config).use { trainer ->
+                        // Shapes for initialization
+                        val batchShape = Shape(batchSize.toLong(), maxSequenceLength.toLong())
+                        val maskedIndicesShape = Shape(batchSize.toLong(), 20)
+
+                        trainer.initialize(batchShape, batchShape, batchShape, maskedIndicesShape)
+
+                        // 4. Load Training Data
+                        val allLines = Files.readAllLines(Paths.get(filePath))
+                        val validLines = allLines.filter { it.trim().isNotEmpty() }.toMutableList()
+
+                        val maskTokenId = tokenizer.encode("[MASK]").ids[0]
+                        val padTokenId = tokenizer.encode("[PAD]").ids[0]
+
+                        println("Start training: ${validLines.size} lines of data, $numEpochs epochs")
+
+                        // 5. Epoch Loop
+                        for (epoch in 1..numEpochs) {
+                            println("--- Epoch $epoch / $numEpochs ---")
+                            validLines.shuffle()
+
+                            var epochLoss = 0f
+                            var batchCount = 0
+
+                            // Mini-batch processing
+                            for (i in validLines.indices step batchSize) {
+                                val currentBatchSize = min(batchSize, validLines.size - i)
+
+                                // Preprocessing (Tokenization & Masking) executed in parallel with Coroutines
+                                val batchData =
+                                    coroutineScope {
+                                        (0 until currentBatchSize)
+                                            .map { b ->
+                                                async(Dispatchers.Default) {
+                                                    val text = validLines[i + b]
+                                                    prepareData0(text, tokenizer, maxSequenceLength, vocabSize, maskTokenId, padTokenId)
+                                                }
+                                            }.awaitAll()
+                                    }
+
+                                // Model computation on GPU/CPU
+                                trainer.newGradientCollector().use { gc ->
+                                    val inputIds = Array(currentBatchSize) { batchData[it].first } // tokenIds
+                                    val maskedIndices = Array(currentBatchSize) { batchData[it].second } // maskedIndices
+                                    val labels = Array(currentBatchSize) { batchData[it].third } // maskedTokens (labels)
+
+                                    val inputIndicesND = manager.create(inputIds)
+                                    val maskedIndicesND = manager.create(maskedIndices)
+                                    val labelsND = manager.create(labels)
+
+                                    val typeIndicesND = manager.zeros(Shape(currentBatchSize.toLong(), maxSequenceLength.toLong()))
+                                    val maskIndicesND = manager.ones(Shape(currentBatchSize.toLong(), maxSequenceLength.toLong()))
+
+                                    // Forward pass: [tokenIds, typeIds, masks, maskedIndices]
+                                    val outputs = trainer.forward(NDList(inputIndicesND, typeIndicesND, maskIndicesND, maskedIndicesND))
+
+                                    // Loss calculation: [labels], [log_probs]
+                                    // outputs is [batch * masked_count, vocab_size]
+                                    // labelsND is [batch, masked_count], so flattening is required
+                                    val flattenedLabels = labelsND.reshape(Shape(-1))
+
+                                    // Filter to ignore label -1
+                                    val validMask = flattenedLabels.neq(-1)
+                                    val validLabels = flattenedLabels.get(validMask)
+                                    val validOutputs = outputs.singletonOrThrow().get(validMask)
+
+                                    if (validLabels.size() > 0) {
+                                        val lossValue = trainer.loss.evaluate(NDList(validLabels), NDList(validOutputs))
+                                        gc.backward(lossValue)
+                                        trainer.step()
+                                        epochLoss += lossValue.getFloat()
+                                        batchCount++
+                                    }
+                                }
+                            }
+                            println("Epoch $epoch finished. Average Loss: ${if (batchCount > 0) epochLoss / batchCount else 0.0}")
+                        }
+
+                        // 6. Save Model
+                        val modelDir = Paths.get("build/model")
+                        if (!Files.exists(modelDir)) Files.createDirectories(modelDir)
+                        model.save(modelDir, "bert-mlm")
+                        println("Model saved: ${modelDir.toAbsolutePath()}")
+                    }
                 }
             }
         }
     }
-}
 
 /**
- * テキストをトークナイズし、BERT標準の 15% マスク処理を適用する（CPU実行）
- * 戻り値: Triple(inputIds, maskedIndices, maskedLabels)
- * maskedIndices: マスクされた位置のインデックス (フラット化されたインデックスではなく、シーケンス内の位置)
- * maskedLabels: マスクされた位置の正解トークンID
+ * Tokenize text and apply standard BERT 15% masking (Executed on CPU)
+ * Returns: Triple(inputIds, maskedIndices, maskedLabels)
+ * maskedIndices: Indices of masked positions (position within sequence, not flattened index)
+ * maskedLabels: Ground truth token IDs for masked positions
  */
 fun prepareData0(
     text: String,
@@ -255,13 +247,13 @@ fun prepareData0(
     maxLen: Int,
     vocabSize: Int,
     maskId: Long,
-    padId: Long
+    padId: Long,
 ): Triple<LongArray, LongArray, LongArray> {
     val random = ThreadLocalRandom.current()
     val encoding = tokenizer.encode(text)
     val ids = encoding.ids
     val inputIds = LongArray(maxLen)
-    
+
     val maskedIndicesList = ArrayList<Long>()
     val maskedLabelsList = ArrayList<Long>()
 
@@ -270,42 +262,47 @@ fun prepareData0(
     for (s in 0 until limit) {
         val originalId = ids[s]
         if (random.nextDouble() < 0.15) {
-            // 15% の確率で予測対象（ラベル）にする
+            // Target for prediction (label) with 15% probability
             maskedIndicesList.add(s.toLong())
             maskedLabelsList.add(originalId)
 
             val subR = random.nextDouble()
-            inputIds[s] = when {
-                subR < 0.8 -> maskId                          // 80% [MASK]
-                subR < 0.9 -> random.nextInt(vocabSize).toLong() // 10% ランダム
-                else -> originalId                             // 10% そのまま
-            }
+            inputIds[s] =
+                when {
+                    subR < 0.8 -> maskId
+
+                    // 80% [MASK]
+                    subR < 0.9 -> random.nextInt(vocabSize).toLong()
+
+                    // 10% Random
+                    else -> originalId // 10% Keep original
+                }
         } else {
             inputIds[s] = originalId
         }
     }
 
-    // 最大長までパディング
+    // Pad to max length
     if (limit < maxLen) {
         for (s in limit until maxLen) {
             inputIds[s] = padId
         }
     }
-    
-    // maskedIndices と maskedLabels を固定長にパディングするか、あるいは可変長のまま扱うか。
-    // DJL の gatherFromIndices は [batch, indices_per_seq] を期待するため、
-    // バッチ内で長さを揃える必要があります。
-    // ここでは簡易的に最大20個までとし、不足分はパディング (例えば 0) します。
-    // ただし、0番目のトークン (CLS) がマスクされていない場合、0でパディングすると CLS を参照してしまいます。
-    // 影響を最小限にするため、パディング部分は無視されるべきですが、
-    // BertMaskedLanguageModelBlock は全てのインデックスに対して計算を行います。
-    // 厳密にはマスク数を揃えるか、動的なグラフ構築が必要ですが、
-    // ここでは簡易的に 0 で埋め、ラベルも -1 (無視) に設定します。
-    
+
+    // Pad maskedIndices and maskedLabels to fixed length or handle as variable length.
+    // DJL's gatherFromIndices expects [batch, indices_per_seq], so
+    // we need to align length within batch.
+    // Here we simply set max to 20 and pad deficiency (e.g. with 0).
+    // Note: If 0th token (CLS) is not masked, padding with 0 will reference CLS.
+    // To minimize impact, padding parts should be ignored, but
+    // BertMaskedLanguageModelBlock computes for all indices.
+    // Strictly speaking, we need to align mask counts or use dynamic graph construction,
+    // but here we simply fill with 0 and set label to -1 (ignore).
+
     val maxMasks = 20
     val maskedIndices = LongArray(maxMasks) { 0 }
-    val maskedLabels = LongArray(maxMasks) { -1 } // Loss計算で無視されるはず
-    
+    val maskedLabels = LongArray(maxMasks) { -1 } // Should be ignored in Loss calculation
+
     for (i in 0 until min(maxMasks, maskedIndicesList.size)) {
         maskedIndices[i] = maskedIndicesList[i]
         maskedLabels[i] = maskedLabelsList[i]
