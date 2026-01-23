@@ -1,4 +1,4 @@
-package org.example.org.example
+package org.example
 
 import ai.djl.Model
 import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer

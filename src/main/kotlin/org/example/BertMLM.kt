@@ -1,4 +1,4 @@
-package org.example.org.example
+package org.example
 
 import ai.djl.Device
 import ai.djl.Model
@@ -12,7 +12,6 @@ import ai.djl.nn.SequentialBlock
 import ai.djl.nn.core.Linear
 import ai.djl.nn.transformer.BertBlock
 import ai.djl.training.DefaultTrainingConfig
-import ai.djl.training.Trainer
 import ai.djl.training.loss.Loss
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
