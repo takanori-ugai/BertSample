@@ -98,3 +98,9 @@ The scenery of commuter trains reflects a cross-section of modern society.
 Planning for the weekend is a highlight of the work week.
 Many people use long holidays to return to their hometowns.
 A fulfilling day is determined by one's own state of mind.
+The agentic patterns discussed so far are provided out-of-the-box by the langchain4j-agentic module, but what if none of them fit the specific needs of your application?
+In this case it is possible to create your own custom pattern, that orchestrates the interactions among a set of subagents in a way that is tailored to your requirements.
+In more details an agentic pattern is simply the specification of an execution plan for the subagents that it coordinates. This plan can be defined by implementing the following Planner interface:
+This interface has three methods: init, firstAction, and nextAction.
+The init method is called once at the beginning of the execution, and can be used to initialize any state or data structures needed by the planner.
+The firstAction method is called to determine the first action to be taken by the agentic pattern, while the nextAction method is called after each agent execution to determine the next action to be taken based on the current state of the AgenticScope and the result of the previous agent execution.
