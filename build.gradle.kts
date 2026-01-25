@@ -12,7 +12,7 @@ plugins {
     id("org.jlleitschuh.gradle.ktlint") version "14.0.1"
     jacoco
     id("com.vanniktech.maven.publish") version "0.35.0"
-    id("com.diffplug.spotless") version "8.1.0"
+    id("com.diffplug.spotless") version "8.2.0"
 }
 
 group = "io.github.ugaikit"
