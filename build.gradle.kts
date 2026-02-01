@@ -28,8 +28,8 @@ dependencies {
     // Select a CUDA build that matches your installed driver/toolkit.
 //    implementation("ai.djl.pytorch:pytorch-native-cu124:2.7.1")
     implementation("ai.djl.pytorch:pytorch-jni:2.7.1-0.36.0")
-    implementation("ai.djl.pytorch:pytorch-native-cu124:2.5.1")
-    implementation("ai.djl.pytorch:pytorch-native-cpu:2.5.1")
+    implementation("ai.djl.pytorch:pytorch-native-cu124:2.7.1")
+    implementation("ai.djl.pytorch:pytorch-native-cpu:2.7.1")
     implementation("ai.djl.huggingface:tokenizers:0.36.0")
     implementation("org.slf4j:slf4j-simple:2.0.17")
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.14")
