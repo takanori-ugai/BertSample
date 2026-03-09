@@ -9,7 +9,7 @@ plugins {
     id("io.gitlab.arturbosch.detekt") version "1.23.8"
     id("com.gradleup.shadow") version "9.3.2"
     id("com.github.jk1.dependency-license-report") version "3.1.1"
-    id("org.jlleitschuh.gradle.ktlint") version "14.0.1"
+    id("org.jlleitschuh.gradle.ktlint") version "14.1.0"
     jacoco
     id("com.vanniktech.maven.publish") version "0.36.0"
     id("com.diffplug.spotless") version "8.2.1"
