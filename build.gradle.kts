@@ -11,7 +11,7 @@ plugins {
     id("com.github.jk1.dependency-license-report") version "3.1.4"
     id("org.jlleitschuh.gradle.ktlint") version "14.2.0"
     jacoco
-    id("com.vanniktech.maven.publish") version "0.36.0"
+    id("com.vanniktech.maven.publish") version "0.37.0"
     id("com.diffplug.spotless") version "8.7.0"
 }
 
