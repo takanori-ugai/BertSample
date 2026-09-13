@@ -24,10 +24,10 @@ repositories {
 
 dependencies {
     implementation("ai.djl:api:0.36.0")
-    implementation("ai.djl.pytorch:pytorch-engine:0.36.0")
+    implementation("ai.djl.pytorch:pytorch-engine:0.38.0")
     // Select a CUDA build that matches your installed driver/toolkit.
 //    implementation("ai.djl.pytorch:pytorch-native-cu124:2.7.1")
-    implementation("ai.djl.pytorch:pytorch-jni:2.7.1-0.36.0")
+    implementation("ai.djl.pytorch:pytorch-jni:2.7.1-0.38.0")
     implementation("ai.djl.pytorch:pytorch-native-cu124:2.7.1")
     implementation("ai.djl.pytorch:pytorch-native-cpu:2.7.1")
     implementation("ai.djl.huggingface:tokenizers:0.36.0")
