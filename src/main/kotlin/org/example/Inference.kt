@@ -24,6 +24,7 @@ fun main() {
     val vocabSize = 30522
     val embeddingSize = 768
     val maxSequenceLength = 128
+    val topK = 5
 
     println("Starting model load: $modelName")
 
@@ -78,6 +79,7 @@ fun main() {
                         // Add padding to match input length to maxSequenceLength
                         val encoding = tokenizer.encode(input)
                         var ids = encoding.ids
+                        val validLength = minOf(ids.size, maxSequenceLength)
 
                         // Pad or truncate
                         if (ids.size > maxSequenceLength) {
@@ -102,15 +104,12 @@ fun main() {
                                 ai.djl.ndarray.types
                                     .Shape(1, seqLen),
                             )
-                        // Masks should be 0 for padding parts, but for inference, filling with 1 often works.
-                        // Strictly speaking, padding parts should be 0.
-                        // Here we simply set all to 1 (valid), but ideally padding positions should be considered.
-                        // The current error is a size mismatch, so matching the size is the priority.
-                        val masks =
-                            manager.ones(
-                                ai.djl.ndarray.types
-                                    .Shape(1, seqLen),
-                            )
+                        // Mark real tokens as valid and ignore the padding positions.
+                        val attentionMask =
+                            FloatArray(maxSequenceLength) { index ->
+                                if (index < validLength) 1f else 0f
+                            }
+                        val masks = manager.create(attentionMask).expandDims(0)
 
                         return NDList(inputIds, typeIds, masks)
                     }
@@ -123,16 +122,22 @@ fun main() {
                         val logits = list[0][0] // [seq_len, vocab_size]
                         val ids = ctx.getAttachment("ids") as LongArray
 
-                        // Identify the index of the [MASK] token (ID: 103)
-                        val maskIndex = ids.indexOf(103L)
+                        // Identify the index of the [MASK] token.
+                        val maskTokenId = tokenizer.encode("[MASK]").ids[0]
+                        val maskIndex = ids.indexOf(maskTokenId)
                         if (maskIndex == -1) return "[MASK] not found."
 
-                        // Get the ID with the maximum probability from the logits at the mask position
+                        // Return the top-k token IDs ranked by their logits.
                         val maskLogits = logits.get(NDIndex(maskIndex.toLong()))
-                        val predictedId = maskLogits.argMax().getLong()
+                        val logitsArray = maskLogits.toFloatArray()
+                        val topKIds =
+                            logitsArray.indices
+                                .sortedByDescending { logitsArray[it] }
+                                .take(topK)
 
-                        // Decode ID to string
-                        return tokenizer.decode(longArrayOf(predictedId))
+                        return topKIds.joinToString(", ") { tokenId ->
+                            tokenizer.decode(longArrayOf(tokenId.toLong())).trim()
+                        }
                     }
 
                     override fun getBatchifier(): Batchifier? = null // We handle batching manually or process single input
@@ -152,9 +157,10 @@ fun main() {
                 for (sentence in testSentences) {
                     try {
                         val result = predictor.predict(sentence).trim()
-                        val completed = sentence.replace("[MASK]", result)
+                        val topPrediction = result.substringBefore(", ")
+                        val completed = sentence.replace("[MASK]", topPrediction)
                         println("Input: $sentence")
-                        println("Prediction: $result")
+                        println("Prediction (top-$topK): [$result]")
                         println("Completed: $completed")
                         println("---------------------------")
                     } catch (e: Exception) {

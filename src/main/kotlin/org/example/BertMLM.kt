@@ -143,16 +143,17 @@ fun main() =
                                 trainer.newGradientCollector().use { gc ->
                                     val inputIds = Array(currentBatchSize) { batchData[it].first }
                                     val labelIds = Array(currentBatchSize) { batchData[it].second }
+                                    val attentionMasks = Array(currentBatchSize) { batchData[it].third }
 
                                     // Creating via manager(GPU) transfers data to GPU memory
                                     val inputIndices = manager.create(inputIds)
                                     val labelIndices = manager.create(labelIds)
 
-                                    // Create dummy typeIds and masks
+                                    // Create typeIds and an attention mask that ignores padding tokens.
                                     val typeIndices = manager.zeros(Shape(currentBatchSize.toLong(), maxSequenceLength.toLong()))
-                                    val maskIndices = manager.ones(Shape(currentBatchSize.toLong(), maxSequenceLength.toLong()))
+                                    val attentionMask = manager.create(attentionMasks)
 
-                                    val outputs = trainer.forward(NDList(inputIndices, typeIndices, maskIndices))
+                                    val outputs = trainer.forward(NDList(inputIndices, typeIndices, attentionMask))
 
                                     // Reshape outputs and labels to 2D and 1D respectively for SoftmaxCrossEntropyLoss
                                     // Output: (batch * seq_len, vocab_size)
@@ -225,17 +226,19 @@ fun prepareData(
     vocabSize: Int,
     maskId: Long,
     padId: Long,
-): Pair<LongArray, LongArray> {
+): Triple<LongArray, LongArray, FloatArray> {
     val random = ThreadLocalRandom.current()
     val encoding = tokenizer.encode(text)
     val ids = encoding.ids
     val inputIds = LongArray(maxLen)
     val labelIds = LongArray(maxLen)
+    val attentionMask = FloatArray(maxLen)
 
     val limit = min(maxLen, ids.size)
 
     for (s in 0 until limit) {
         val originalId = ids[s]
+        attentionMask[s] = 1f
         if (random.nextDouble() < 0.15) {
             labelIds[s] = originalId
             val subR = random.nextDouble()
@@ -258,5 +261,5 @@ fun prepareData(
         }
     }
 
-    return Pair(inputIds, labelIds)
+    return Triple(inputIds, labelIds, attentionMask)
 }

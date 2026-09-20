@@ -109,6 +109,7 @@ build/model/
 - 学習前のモデルはランダム初期化されるため、学習前に意味のある予測はできません。
 - GPU が利用可能な場合は GPU を選択し、利用できない場合は CPU にフォールバックします。
 - `Inference.kt` と `InferenceParallel.kt` はモデル構造が異なるため、対応する学習プログラムと組み合わせて使用してください。
+- 推論時は各 `[MASK]` 位置について、logits の上位5候補（top-5）を表示します。
 - CUDA 用 native runtime の依存関係は、実行環境の CUDA / NVIDIA ドライバーと互換性のあるものを選択してください。
 
 ## License

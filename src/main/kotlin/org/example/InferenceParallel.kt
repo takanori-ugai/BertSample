@@ -22,6 +22,7 @@ fun main() {
     val vocabSize = 30522
     val embeddingSize = 768
     val maxSequenceLength = 128
+    val topK = 5
 
     println("Starting model load: $modelName")
 
@@ -101,6 +102,7 @@ fun main() {
                         val manager = ctx.ndManager
                         val encoding = tokenizer.encode(input)
                         var ids = encoding.ids
+                        val validLength = minOf(ids.size, maxSequenceLength)
 
                         val maskTokenId = tokenizer.encode("[MASK]").ids[0]
                         val padId = tokenizer.encode("[PAD]").ids[0]
@@ -132,7 +134,11 @@ fun main() {
                         // Create NDArrays
                         val inputIds = manager.create(ids).expandDims(0)
                         val typeIds = manager.zeros(Shape(1, maxSequenceLength.toLong()))
-                        val masks = manager.ones(Shape(1, maxSequenceLength.toLong()))
+                        val attentionMask =
+                            FloatArray(maxSequenceLength) { index ->
+                                if (index < validLength) 1f else 0f
+                            }
+                        val masks = manager.create(attentionMask).expandDims(0)
 
                         // maskedIndices for model input: [batch, num_masks]
                         // Since we process one sentence at a time (batch=1), we expand dims
@@ -152,11 +158,18 @@ fun main() {
 
                         for (i in maskedIndices.indices) {
                             val tokenLogits = logits.get(i.toLong())
-                            val predictedId = tokenLogits.argMax().getLong()
-                            val word = tokenizer.decode(longArrayOf(predictedId))
+                            val logitsArray = tokenLogits.toFloatArray()
+                            val topKIds =
+                                logitsArray.indices
+                                    .sortedByDescending { logitsArray[it] }
+                                    .take(topK)
+                            val words =
+                                topKIds.joinToString(", ") { tokenId ->
+                                    tokenizer.decode(longArrayOf(tokenId.toLong())).trim()
+                                }
 
                             if (sb.isNotEmpty()) sb.append(", ")
-                            sb.append("[MASK] at ${maskedIndices[i]} -> $word")
+                            sb.append("[MASK] at ${maskedIndices[i]} -> [$words]")
                         }
 
                         return sb.toString()

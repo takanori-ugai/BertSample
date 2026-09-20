@@ -188,19 +188,20 @@ fun main() =
 
                                 // Model computation on GPU/CPU
                                 trainer.newGradientCollector().use { gc ->
-                                    val inputIds = Array(currentBatchSize) { batchData[it].first } // tokenIds
-                                    val maskedIndices = Array(currentBatchSize) { batchData[it].second } // maskedIndices
-                                    val labels = Array(currentBatchSize) { batchData[it].third } // maskedTokens (labels)
+                                    val inputIds = Array(currentBatchSize) { batchData[it].inputIds } // tokenIds
+                                    val maskedIndices = Array(currentBatchSize) { batchData[it].maskedIndices } // maskedIndices
+                                    val labels = Array(currentBatchSize) { batchData[it].maskedLabels } // maskedTokens (labels)
+                                    val attentionMasks = Array(currentBatchSize) { batchData[it].attentionMask }
 
                                     val inputIndicesND = manager.create(inputIds)
                                     val maskedIndicesND = manager.create(maskedIndices)
                                     val labelsND = manager.create(labels)
 
                                     val typeIndicesND = manager.zeros(Shape(currentBatchSize.toLong(), maxSequenceLength.toLong()))
-                                    val maskIndicesND = manager.ones(Shape(currentBatchSize.toLong(), maxSequenceLength.toLong()))
+                                    val attentionMaskND = manager.create(attentionMasks)
 
                                     // Forward pass: [tokenIds, typeIds, masks, maskedIndices]
-                                    val outputs = trainer.forward(NDList(inputIndicesND, typeIndicesND, maskIndicesND, maskedIndicesND))
+                                    val outputs = trainer.forward(NDList(inputIndicesND, typeIndicesND, attentionMaskND, maskedIndicesND))
 
                                     // Loss calculation: [labels], [log_probs]
                                     // outputs is [batch * masked_count, vocab_size]
@@ -237,7 +238,7 @@ fun main() =
 
 /**
  * Tokenize text and apply standard BERT 15% masking (Executed on CPU)
- * Returns: Triple(inputIds, maskedIndices, maskedLabels)
+ * Returns token IDs, masked positions, labels, and an attention mask.
  * maskedIndices: Indices of masked positions (position within sequence, not flattened index)
  * maskedLabels: Ground truth token IDs for masked positions
  */
@@ -248,11 +249,12 @@ fun prepareData0(
     vocabSize: Int,
     maskId: Long,
     padId: Long,
-): Triple<LongArray, LongArray, LongArray> {
+): PreparedMlmData {
     val random = ThreadLocalRandom.current()
     val encoding = tokenizer.encode(text)
     val ids = encoding.ids
     val inputIds = LongArray(maxLen)
+    val attentionMask = FloatArray(maxLen)
 
     val maskedIndicesList = ArrayList<Long>()
     val maskedLabelsList = ArrayList<Long>()
@@ -261,6 +263,7 @@ fun prepareData0(
 
     for (s in 0 until limit) {
         val originalId = ids[s]
+        attentionMask[s] = 1f
         if (random.nextDouble() < 0.15) {
             // Target for prediction (label) with 15% probability
             maskedIndicesList.add(s.toLong())
@@ -308,5 +311,12 @@ fun prepareData0(
         maskedLabels[i] = maskedLabelsList[i]
     }
 
-    return Triple(inputIds, maskedIndices, maskedLabels)
+    return PreparedMlmData(inputIds, maskedIndices, maskedLabels, attentionMask)
 }
+
+data class PreparedMlmData(
+    val inputIds: LongArray,
+    val maskedIndices: LongArray,
+    val maskedLabels: LongArray,
+    val attentionMask: FloatArray,
+)
