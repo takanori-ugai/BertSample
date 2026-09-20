@@ -5,6 +5,7 @@ import org.jlleitschuh.gradle.ktlint.reporter.ReporterType
 plugins {
     kotlin("jvm") version "2.4.20"
     java
+    application
     id("org.jetbrains.dokka") version "2.2.0"
     id("io.gitlab.arturbosch.detekt") version "1.23.8"
     id("com.gradleup.shadow") version "9.6.1"
@@ -17,6 +18,21 @@ plugins {
 
 group = "io.github.ugaikit"
 version = "0.1"
+
+application {
+    mainClass.set("org.example.MainKt")
+}
+
+val executeMainClass =
+    providers.gradleProperty("mainClass")
+        .orElse("org.example.MainKt")
+
+tasks.register<JavaExec>("execute") {
+    group = "application"
+    description = "Run a selected Kotlin entry point with -PmainClass=<fully-qualified-class-name>."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set(executeMainClass)
+}
 
 repositories {
     mavenCentral()
