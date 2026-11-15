@@ -6,7 +6,7 @@ plugins {
     kotlin("jvm") version "2.4.21"
     java
     application
-    id("org.jetbrains.dokka") version "2.2.0"
+    id("org.jetbrains.dokka") version "2.3.0"
     id("io.gitlab.arturbosch.detekt") version "1.23.8"
     id("com.gradleup.shadow") version "9.6.1"
     id("com.github.jk1.dependency-license-report") version "3.1.5"
